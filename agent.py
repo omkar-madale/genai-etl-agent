@@ -1,49 +1,55 @@
 from openai import OpenAI
-from prompts import SYSTEM_PROMPT
+from prompts import ANALYZE_PROMPT, ASK_PROMPT
 from memory import add_message, get_memory
 from etl import run_etl
 
 client = OpenAI()
 
+
 def analyze_logs():
-    summary = run_etl()
+    summary = str(run_etl())
 
-    prompt = f"""
-Here is the system log summary:
-
-{summary}
-
-Explain what incident is happening in production.
-"""
-
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages += get_memory()
-    messages.append({"role": "user", "content": prompt})
+    messages = [
+        {"role": "system", "content": ANALYZE_PROMPT},
+        *get_memory(),
+        {"role": "user", "content": summary}
+    ]
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
-        temperature=0.2
+        temperature=0.1
     )
 
     reply = response.choices[0].message.content
 
-    add_message("user", prompt)
+    add_message("user", summary)
     add_message("assistant", reply)
 
     return reply
 
 
 def ask_question(question: str):
+    summary = str(run_etl())
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages += get_memory()
-    messages.append({"role": "user", "content": question})
+    user_prompt = f"""
+LOG DATA:
+{summary}
+
+QUESTION:
+{question}
+"""
+
+    messages = [
+        {"role": "system", "content": ASK_PROMPT},
+        *get_memory(),
+        {"role": "user", "content": user_prompt}
+    ]
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
-        temperature=0.3
+        temperature=0.2
     )
 
     reply = response.choices[0].message.content
