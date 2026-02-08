@@ -1,0 +1,8 @@
+﻿fastapi
+uvicorn[standard]
+openai
+langchain
+python-dotenv
+pydantic
+requests
+tiktoken
