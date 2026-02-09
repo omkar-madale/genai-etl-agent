@@ -1,54 +1,36 @@
 import os
 import re
 import pandas as pd
-from azure.storage.blob import BlobServiceClient
-
-# ==============================
-# Azure Storage Configuration
-# ==============================
-
-CONTAINER_NAME = "data"
-BLOB_NAME = "logs.txt"
-
-# Read connection string from environment variable (Azure App Service -> Environment variables)
-CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+from azure.storage.blob import BlobClient
 
 
-# ---------------- DOWNLOAD FROM BLOB ----------------
-def download_logs_from_blob():
-    """
-    Downloads log file from Azure Blob Storage.
-
-    Cloud apps must not depend on local disk.
-    Storage is the source of truth.
-    """
-
-    if not CONNECTION_STRING:
-        raise Exception("AZURE_STORAGE_CONNECTION_STRING not set in environment variables")
-
-    blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-    blob_client = blob_service.get_blob_client(container=CONTAINER_NAME, blob=BLOB_NAME)
-
-    data = blob_client.download_blob().readall()
-
-    # NASA logs are latin-1 encoded
-    return data.decode("latin-1").splitlines()
+# ---------------- CONFIG ----------------
+CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+CONTAINER = os.getenv("BLOB_CONTAINER")
+BLOB_NAME = os.getenv("BLOB_NAME")
 
 
 # ---------------- EXTRACT ----------------
 def extract_logs():
     """
-    Parse Apache/NASA logs into structured records.
+    Read logs directly from Azure Blob Storage
     """
 
-    raw_lines = download_logs_from_blob()
+    blob = BlobClient.from_connection_string(
+        CONNECTION_STRING,
+        container_name=CONTAINER,
+        blob_name=BLOB_NAME
+    )
+
+    data = blob.download_blob().content_as_text(encoding="latin-1")
+
     logs = []
 
     pattern = re.compile(
         r'(\S+) (\S+) (\S+) \[(.*?)\] "(.*?)" (\d{3}) (\S+)'
     )
 
-    for line in raw_lines:
+    for line in data.splitlines():
         match = pattern.match(line)
         if match:
             host, ident, user, time, request, status, size = match.groups()
@@ -66,14 +48,11 @@ def extract_logs():
 
 # ---------------- TRANSFORM ----------------
 def transform_logs(logs):
-    """
-    Convert structured logs into observability metrics.
-    """
-
-    if not logs:
-        return {"error": "No logs found or parsing failed"}
 
     df = pd.DataFrame(logs)
+
+    if df.empty:
+        return {"error": "No logs found"}
 
     summary = {
         "total_requests": len(df),
@@ -85,12 +64,7 @@ def transform_logs(logs):
     return summary
 
 
-# ---------------- LOAD / PIPELINE ----------------
+# ---------------- PIPELINE ----------------
 def run_etl():
-    """
-    Full ETL pipeline
-    """
-
     logs = extract_logs()
-    summary = transform_logs(logs)
-    return summary
+    return transform_logs(logs)
