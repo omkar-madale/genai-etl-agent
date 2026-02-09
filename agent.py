@@ -1,41 +1,27 @@
+import json
 from openai import OpenAI
 from prompts import ANALYZE_PROMPT, ASK_PROMPT
 from memory import add_message, get_memory
 from etl import run_etl
 
-# Initialize OpenAI client using API key from environment
-client = OpenAI()
+client = OpenAI(timeout=60)
+
+# In-memory cache (fast + safe for single Azure instance)
+REPORT_CACHE = {}
 
 
-def analyze_logs():
+def analyze_logs(job_id: str):
     """
-    Generates automated incident summary from logs.
-
-    Flow:
-    ETL → structured statistics → LLM → monitoring-style report
-
-    We DO NOT send raw logs to LLM.
-    We send processed summary only.
-    This reduces:
-    - cost
-    - latency
-    - hallucinations
-    - token overflow
+    Runs ETL and generates AI incident report
     """
 
-    # Run ETL pipeline to compute log statistics
     summary = str(run_etl())
 
-    # Construct chat history for LLM
-    # system prompt defines strict output format
-    # memory provides conversational continuity
     messages = [
         {"role": "system", "content": ANALYZE_PROMPT},
-        *get_memory(),
         {"role": "user", "content": summary}
     ]
 
-    # Low temperature = deterministic monitoring-style output
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
@@ -44,31 +30,24 @@ def analyze_logs():
 
     reply = response.choices[0].message.content
 
-    # Store conversation for contextual follow-ups
-    add_message("user", summary)
-    add_message("assistant", reply)
+    # store ONLY final report (not raw logs)
+    REPORT_CACHE[job_id] = reply
 
     return reply
 
 
-def ask_question(question: str):
+def ask_question(job_id: str, question: str):
     """
-    Allows interactive investigation over computed log data.
-
-    Difference from analyze_logs():
-    analyze_logs → automatic incident summary
-    ask_question → human-driven investigation
-
-    We again attach computed ETL statistics so
-    the LLM answers ONLY from real data (RAG style).
+    Ask questions about a specific analysis job
     """
 
-    # Always recompute latest log state
-    summary = str(run_etl())
+    if job_id not in REPORT_CACHE:
+        return "Report not found. Run analysis first."
 
-    # Combine question + data context
+    summary = REPORT_CACHE[job_id]
+
     user_prompt = f"""
-LOG DATA:
+INCIDENT REPORT:
 {summary}
 
 QUESTION:
@@ -81,7 +60,6 @@ QUESTION:
         {"role": "user", "content": user_prompt}
     ]
 
-    # Slightly higher temperature for flexible Q&A reasoning
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
@@ -90,7 +68,6 @@ QUESTION:
 
     reply = response.choices[0].message.content
 
-    # Save conversation memory
     add_message("user", question)
     add_message("assistant", reply)
 
