@@ -1,50 +1,37 @@
-# In-memory conversation storage
-# Acts as short-term context memory for the LLM
-# (similar to chat history in ChatGPT)
-conversation_memory = []
+import json
+import os
+
+MEMORY_FILE = "/home/memory.json"
+
+
+def _load():
+    if not os.path.exists(MEMORY_FILE):
+        return []
+    try:
+        with open(MEMORY_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return []
+
+
+def _save(data):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(data, f)
 
 
 def add_message(role, content):
-    """
-    Adds a message to conversation history.
+    data = _load()
+    data.append({"role": role, "content": content})
 
-    Why:
-    LLM responses improve when it remembers previous interactions.
-    We store both user questions and assistant answers.
+    # keep only last 10 messages (token control + speed)
+    data = data[-10:]
 
-    Important:
-    OpenAI API requires message content to be STRING.
-    Some objects (dict/list) can break the API request,
-    so we force conversion to string for safety.
-    """
-    conversation_memory.append({
-        "role": role,
-        "content": str(content)  # ALWAYS STRING
-    })
+    _save(data)
 
 
 def get_memory():
-    """
-    Returns recent conversation context.
+    return _load()
 
-    Why limit history:
-    LLM cost + latency grows with token size.
-    Large history = slow + expensive + sometimes API errors.
 
-    Strategy:
-    Keep only last 6 messages → enough context, prevents token explosion.
-    (Production systems use sliding window memory like this)
-    """
-
-    safe_memory = []
-
-    # Defensive copy:
-    # prevents accidental mutation & guarantees valid format
-    for msg in conversation_memory:
-        safe_memory.append({
-            "role": msg["role"],
-            "content": str(msg["content"])
-        })
-
-    # Sliding window memory
-    return safe_memory[-6:]  # keep last 6 only
+def clear_memory():
+    _save([])

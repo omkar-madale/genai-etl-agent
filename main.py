@@ -1,57 +1,68 @@
-# Loads environment variables from .env (used for OPENAI_API_KEY)
 from dotenv import load_dotenv
 load_dotenv()
 
-# FastAPI framework to expose REST endpoints
-from fastapi import FastAPI
-
-# Core agent functions
-# analyze_logs → generates incident report from computed statistics
-# ask_question → Q&A over previously analyzed data
+from fastapi import FastAPI, BackgroundTasks
 from agent import analyze_logs, ask_question
+import uuid
+from memory import clear_memory
 
-import json 
-
-# Create API application
 app = FastAPI(title="AI Log Analysis Agent")
 
+# in-memory job store
+JOBS = {}
 
-# Health check endpoint
-# Used to verify server is running (DevOps style readiness probe)
+@app.post("/memory/clear")
+def reset_memory():
+    clear_memory()
+    return {"status": "memory cleared"}
+
 @app.get("/")
 def home():
     return {"message": "AI ETL Log Agent Running"}
 
 
-# Main analysis endpoint
-# Triggers ETL pipeline + AI reasoning
-# Flow:
-# logs.txt → ETL → summary stats → LLM → structured incident output
-@app.post("/analyze")
-def analyze():
-    result = analyze_logs()
-    return {"analysis": result}
+# ---------- START ANALYSIS ----------
+@app.post("/analyze/start")
+def start_analysis(background_tasks: BackgroundTasks):
+
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {"status": "running", "result": None}
+
+    background_tasks.add_task(run_analysis_job, job_id)
+
+    return {"job_id": job_id, "status": "started"}
 
 
-# Q&A endpoint
-# Allows querying the analyzed log context
-# Example:
-# /ask?q=Why are users getting 404 errors?
-@app.post("/ask")
-def ask(q: str):
-    answer = ask_question(q)
-    return {"answer": answer}
-
-
-# Returns last generated structured report
-# This avoids recomputing ETL + LLM each time (acts like cache layer)
-@app.get("/report")
-def get_report():
+def run_analysis_job(job_id: str):
     try:
-        # Reads report generated during analysis phase
-        with open("report.json", "r") as f:
-            data = json.load(f)
-        return data
-    except:
-        # Happens if /analyze not executed yet
-        return {"error": "No report generated yet"}
+        result = analyze_logs(job_id)
+        JOBS[job_id] = {"status": "completed", "result": result}
+    except Exception as e:
+        JOBS[job_id] = {"status": "failed", "result": str(e)}
+
+
+# ---------- CHECK STATUS ----------
+@app.get("/analyze/status/{job_id}")
+def get_status(job_id: str):
+    return JOBS.get(job_id, {"error": "job not found"})
+
+
+# ---------- GET RESULT ----------
+@app.get("/analyze/result/{job_id}")
+def get_result(job_id: str):
+    job = JOBS.get(job_id)
+
+    if not job:
+        return {"error": "job not found"}
+
+    if job["status"] != "completed":
+        return {"status": job["status"]}
+
+    return {"analysis": job["result"]}
+
+
+# ---------- Q&A ----------
+@app.post("/ask/{job_id}")
+def ask(job_id: str, q: str):
+    answer = ask_question(job_id, q)
+    return {"answer": answer}
