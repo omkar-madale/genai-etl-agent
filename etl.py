@@ -1,49 +1,65 @@
 import os
 import re
 import pandas as pd
+from azure.storage.blob import BlobServiceClient
 
-# Resolve absolute path of project directory
-# Important when app runs from different working directory (e.g. Uvicorn / Docker / Cloud)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-file_path = os.path.join(BASE_DIR, "logs.txt")
+# ==============================
+# Azure Storage Configuration
+# ==============================
+
+CONTAINER_NAME = "data"
+BLOB_NAME = "logs.txt"
+
+# Read connection string from environment variable (Azure App Service -> Environment variables)
+CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+
+
+# ---------------- DOWNLOAD FROM BLOB ----------------
+def download_logs_from_blob():
+    """
+    Downloads log file from Azure Blob Storage.
+
+    Cloud apps must not depend on local disk.
+    Storage is the source of truth.
+    """
+
+    if not CONNECTION_STRING:
+        raise Exception("AZURE_STORAGE_CONNECTION_STRING not set in environment variables")
+
+    blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+    blob_client = blob_service.get_blob_client(container=CONTAINER_NAME, blob=BLOB_NAME)
+
+    data = blob_client.download_blob().readall()
+
+    # NASA logs are latin-1 encoded
+    return data.decode("latin-1").splitlines()
 
 
 # ---------------- EXTRACT ----------------
 def extract_logs():
     """
-    Reads raw server log file and converts text lines into structured records.
-
-    We parse Apache/NASA log format using regex.
-    Raw logs → structured JSON-like objects
-
-    Why needed:
-    LLM cannot reliably understand raw logs at scale.
-    We first structure data → then analyze.
+    Parse Apache/NASA logs into structured records.
     """
 
+    raw_lines = download_logs_from_blob()
     logs = []
 
-    # Regex for Common Log Format
-    # Example:
-    # host ident user [time] "request" status size
     pattern = re.compile(
         r'(\S+) (\S+) (\S+) \[(.*?)\] "(.*?)" (\d{3}) (\S+)'
     )
 
-    with open(file_path, "r", encoding="latin-1") as f:
-        for line in f:
-            match = pattern.match(line)
-            if match:
-                host, ident, user, time, request, status, size = match.groups()
+    for line in raw_lines:
+        match = pattern.match(line)
+        if match:
+            host, ident, user, time, request, status, size = match.groups()
 
-                # Convert raw text into structured record
-                logs.append({
-                    "host": host,
-                    "time": time,
-                    "request": request,
-                    "status": int(status),
-                    "size": 0 if size == "-" else int(size)
-                })
+            logs.append({
+                "host": host,
+                "time": time,
+                "request": request,
+                "status": int(status),
+                "size": 0 if size == "-" else int(size)
+            })
 
     return logs
 
@@ -51,45 +67,28 @@ def extract_logs():
 # ---------------- TRANSFORM ----------------
 def transform_logs(logs):
     """
-    Converts structured logs into aggregated metrics.
-
-    This is the core observability step:
-    raw events → monitoring statistics
-
-    LLM will NOT see individual logs.
-    LLM sees only computed metrics (reduces hallucination).
+    Convert structured logs into observability metrics.
     """
+
+    if not logs:
+        return {"error": "No logs found or parsing failed"}
 
     df = pd.DataFrame(logs)
 
     summary = {
-        # traffic volume
         "total_requests": len(df),
-
-        # failures
         "error_count": int((df["status"] >= 400).sum()),
-
-        # top failure types
         "top_errors": df[df["status"] >= 400]["status"].value_counts().head(5).to_dict(),
-
-        # most accessed endpoints
         "most_requested": df["request"].value_counts().head(5).to_dict()
     }
 
     return summary
 
 
-# ---------------- LOAD ----------------
+# ---------------- LOAD / PIPELINE ----------------
 def run_etl():
     """
-    Full ETL pipeline:
-
-    Extract  → parse logs
-    Transform → compute metrics
-    Load → return structured summary (used by AI agent)
-
-    Not loading into DB because this project focuses on
-    real-time analysis instead of storage.
+    Full ETL pipeline
     """
 
     logs = extract_logs()

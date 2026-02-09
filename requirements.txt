@@ -1,11 +1,9 @@
 ﻿fastapi
-uvicorn[standard]
+uvicorn
+gunicorn
+pandas
+numpy
 openai
 langchain
+azure-storage-blob==12.19.0
 python-dotenv
-pydantic
-requests
-tiktoken
-gunicorn
-uvicorn[standard]
-pandas
